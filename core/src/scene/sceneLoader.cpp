@@ -182,7 +182,7 @@ bool SceneLoader::applyConfig(const std::shared_ptr<Platform>& _platform, const 
     // Instantiate built-in styles
     _scene->styles().emplace_back(new PolygonStyle("polygons"));
     _scene->styles().emplace_back(new PolylineStyle("lines"));
-    _scene->styles().emplace_back(new DebugTextStyle("debugtext", std::make_shared<FontContext>(_platform), true));
+    _scene->styles().emplace_back(new DebugTextStyle("debugtext", _scene->fontContext(), true));
     _scene->styles().emplace_back(new TextStyle("text", _scene->fontContext(), true));
     _scene->styles().emplace_back(new DebugStyle("debug"));
     _scene->styles().emplace_back(new PointStyle("points", _scene->fontContext()));
@@ -482,18 +482,7 @@ MaterialTexture SceneLoader::loadMaterialTexture(const std::shared_ptr<Platform>
     const std::string& name = textureNode.Scalar();
 
     MaterialTexture matTex;
-    {
-        std::lock_guard<std::mutex> lock(scene->textureMutex);
-        matTex.tex = scene->textures()[name];
-    }
-
-    if (!matTex.tex) {
-        // Load inline material  textures
-        if (!loadTexture(platform, name, scene)) {
-            LOGW("Not able to load material texture: %s", name.c_str());
-            return MaterialTexture();
-        }
-    }
+    matTex.tex = getOrLoadTexture(platform, name, scene);
 
     if (Node mappingNode = matCompNode["mapping"]) {
         const std::string& mapping = mappingNode.Scalar();
@@ -562,8 +551,11 @@ bool SceneLoader::extractTexFiltering(Node& filtering, TextureFiltering& filter)
 }
 
 
-std::shared_ptr<Texture> SceneLoader::fetchTexture(const std::shared_ptr<Platform>& platform, const std::string& name, const std::string& urlString,
-        const TextureOptions& options, bool generateMipmaps, const std::shared_ptr<Scene>& scene) {
+std::shared_ptr<Texture> SceneLoader::fetchTexture(const std::shared_ptr<Platform>& platform,
+                                                   const std::string& name, const std::string& urlString,
+                                                   const TextureOptions& options, bool generateMipmaps,
+                                                   const std::shared_ptr<Scene>& scene,
+                                                   float density) {
 
     std::shared_ptr<Texture> texture;
 
@@ -584,7 +576,7 @@ std::shared_ptr<Texture> SceneLoader::fetchTexture(const std::shared_ptr<Platfor
             LOGE("Can't decode Base64 texture");
             return nullptr;
         }
-        texture = std::make_shared<Texture>(0, 0, options, generateMipmaps);
+        texture = std::make_shared<Texture>(0, 0, options, generateMipmaps, density);
 
         std::vector<char> textureData;
         auto cdata = reinterpret_cast<char*>(blob.data());
@@ -593,14 +585,13 @@ std::shared_ptr<Texture> SceneLoader::fetchTexture(const std::shared_ptr<Platfor
             LOGE("Invalid Base64 texture");
         }
     } else {
-        texture = std::make_shared<Texture>(std::vector<char>(), options, generateMipmaps);
+        texture = std::make_shared<Texture>(std::vector<char>(), options, generateMipmaps, density);
 
         scene->pendingTextures++;
-        scene->startUrlRequest(platform, url, [&, scene, texture](UrlResponse response) {
+        scene->startUrlRequest(platform, url, [&, url, scene, texture](UrlResponse response) {
                 if (response.error) {
                     LOGE("Error retrieving URL '%s': %s", url.string().c_str(), response.error);
                 } else {
-                    std::lock_guard<std::mutex> lock(scene->textureMutex);
                     if (texture) {
                         if (!texture->loadImageFromMemory(std::move(response.content))) {
                             LOGE("Invalid texture data from URL '%s'", url.string().c_str());
@@ -620,34 +611,40 @@ std::shared_ptr<Texture> SceneLoader::fetchTexture(const std::shared_ptr<Platfor
     return texture;
 }
 
-bool SceneLoader::loadTexture(const std::shared_ptr<Platform>& platform, const std::string& url,
-                              const std::shared_ptr<Scene>& scene) {
-    TextureOptions options = {GL_RGBA, GL_RGBA, {GL_LINEAR, GL_LINEAR}, {GL_CLAMP_TO_EDGE, GL_CLAMP_TO_EDGE}};
+std::shared_ptr<Texture> SceneLoader::getOrLoadTexture(const std::shared_ptr<Platform>& platform,
+                                                       const std::string& name, const std::shared_ptr<Scene>& scene) {
 
-    auto texture = fetchTexture(platform, url, url, options, false, scene);
-    {
-        std::lock_guard<std::mutex> lock(scene->textureMutex);
-        scene->textures()[url] = texture;
+    auto entry = scene->textures().find(name);
+    if (entry != scene->textures().end()) {
+        return entry->second;
     }
 
-    return true;
+    // If texture could not be found by name then interpret name as URL
+    TextureOptions options = {GL_RGBA, GL_RGBA, {GL_LINEAR, GL_LINEAR}, {GL_CLAMP_TO_EDGE, GL_CLAMP_TO_EDGE}};
+
+    auto texture = fetchTexture(platform, name, name, options, false, scene);
+
+    scene->textures().emplace(name, texture);
+
+    return texture;
 }
 
 void SceneLoader::loadTexture(const std::shared_ptr<Platform>& platform, const std::pair<Node, Node>& node,
                               const std::shared_ptr<Scene>& scene) {
 
     const std::string& name = node.first.Scalar();
-    Node textureConfig = node.second;
+    const Node& textureConfig = node.second;
+
     if (!textureConfig.IsMap()) {
         LOGW("Invalid texture node '%s', skipping.", name.c_str());
         return;
     }
 
-    std::string file;
+    std::string url;
     TextureOptions options = {GL_RGBA, GL_RGBA, {GL_LINEAR, GL_LINEAR}, {GL_CLAMP_TO_EDGE, GL_CLAMP_TO_EDGE} };
 
-    if (Node url = textureConfig["url"]) {
-        file = url.as<std::string>();
+    if (Node urlNode = textureConfig["url"]) {
+        url = urlNode.as<std::string>();
     } else {
         LOGW("No url specified for texture '%s', skipping.", name.c_str());
         return;
@@ -661,9 +658,14 @@ void SceneLoader::loadTexture(const std::shared_ptr<Platform>& platform, const s
         }
     }
 
-    auto texture = fetchTexture(platform, name, file, options, generateMipmaps, scene);
+    float density = 1.f;
+    if (Node d = textureConfig["density"]) {
+        double val;
+        if (getDouble(d, val)) { density = val; }
+    }
 
-    std::lock_guard<std::mutex> lock(scene->textureMutex);
+    auto texture = fetchTexture(platform, name, url, options, generateMipmaps, scene, density);
+
     if (Node sprites = textureConfig["sprites"]) {
         auto atlas = std::make_unique<SpriteAtlas>();
 
@@ -826,7 +828,6 @@ void SceneLoader::loadStyleProps(const std::shared_ptr<Platform>& platform, Styl
     }
 
     if (Node textureNode = styleNode["texture"]) {
-        std::lock_guard<std::mutex> lock(scene->textureMutex);
         if (auto pointStyle = dynamic_cast<PointStyle*>(&style)) {
             const std::string& textureName = textureNode.Scalar();
             auto styleTexture = scene->getTexture(textureName);
@@ -1571,6 +1572,11 @@ void SceneLoader::parseStyleParams(Node params, const std::shared_ptr<Scene>& sc
 
             break;
         }
+        case NodeType::Null: {
+            // Handles the case, when null style param value is used to unset a merged style param
+            out.emplace_back(StyleParam::getKey(key));
+            break;
+        }
         default:
             LOGW("Style parameter %s must be a scalar, sequence, or map.", key.c_str());
         }
@@ -1592,16 +1598,9 @@ bool SceneLoader::parseStyleUniforms(const std::shared_ptr<Platform>& platform, 
         } else {
             const std::string& strVal = value.Scalar();
             styleUniform.type = "sampler2D";
-
-            if (scene) {
-                std::shared_ptr<Texture> texture = scene->getTexture(strVal);
-
-                if (!texture) {
-                    loadTexture(platform, strVal, scene);
-                }
-            }
-
             styleUniform.value = strVal;
+
+            getOrLoadTexture(platform, strVal, scene);
         }
     } else if (value.IsSequence()) {
         int size = value.size();
@@ -1640,13 +1639,7 @@ bool SceneLoader::parseStyleUniforms(const std::shared_ptr<Platform>& platform, 
                 const std::string& textureName = strVal.Scalar();
                 textureArrayUniform.names.push_back(textureName);
 
-                if (scene) {
-                    std::shared_ptr<Texture> texture = scene->getTexture(textureName);
-
-                    if (!texture) {
-                        loadTexture(platform, textureName, scene);
-                    }
-                }
+                getOrLoadTexture(platform, textureName, scene);
             }
 
             styleUniform.value = std::move(textureArrayUniform);

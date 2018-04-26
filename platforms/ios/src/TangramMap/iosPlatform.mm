@@ -60,6 +60,7 @@ std::vector<FontSourceHandle> iOSPlatform::systemFontFallbacksHandle() const {
     NSArray<NSString *> *fallbacks = [UIFont familyNames];
 
     std::vector<FontSourceHandle> handles;
+    handles.reserve([fallbacks count]);
 
     for (NSString* fallback in fallbacks) {
 
@@ -67,7 +68,7 @@ std::vector<FontSourceHandle> iOSPlatform::systemFontFallbacksHandle() const {
 
         for (NSString* fontName in [UIFont fontNamesForFamilyName:fallback]) {
             if ( ![fontName containsString:@"-"] || [fontName containsString:@"-Regular"]) {
-                handles.emplace_back(fontName.UTF8String, true);
+                handles.emplace_back(std::string(fontName.UTF8String));
                 break;
             }
         }
@@ -117,7 +118,7 @@ FontSourceHandle iOSPlatform::systemFont(const std::string& _name, const std::st
         }
     }
 
-    if (_face != "normal") {
+    if (_face != "regular") {
         UIFontDescriptorSymbolicTraits traits;
         UIFontDescriptor* descriptor = [font fontDescriptor];
 
@@ -134,20 +135,25 @@ FontSourceHandle iOSPlatform::systemFont(const std::string& _name, const std::st
         }
     }
 
-    return FontSourceHandle(font.fontName.UTF8String, true);
+    return FontSourceHandle(std::string(font.fontName.UTF8String));
 }
 
 UrlRequestHandle iOSPlatform::startUrlRequest(Url _url, UrlCallback _callback) {
     __strong TGMapViewController* mapViewController = m_viewController;
 
+    UrlResponse errorResponse;
     if (!mapViewController) {
-        return false;
+        errorResponse.error = "MapViewController not initialized.";
+        _callback(errorResponse);
+        return 0;
     }
 
     TGHttpHandler* httpHandler = [mapViewController httpHandler];
 
     if (!httpHandler) {
-        return false;
+        errorResponse.error = "HttpHandler not set in MapViewController";
+        _callback(errorResponse);
+        return 0;
     }
 
     TGDownloadCompletionHandler handler = ^void (NSData* data, NSURLResponse* response, NSError* error) {

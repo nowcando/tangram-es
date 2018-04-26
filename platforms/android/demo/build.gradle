@@ -2,14 +2,13 @@ apply plugin: 'com.android.application'
 
 android {
   compileSdkVersion 26
-  buildToolsVersion '25.0.3'
 
-  def apiKey = project.hasProperty('mapzenApiKey') ? mapzenApiKey : System.getenv('MAPZEN_API_KEY')
+  def apiKey = project.hasProperty('nextzenApiKey') ? nextzenApiKey : System.getenv('NEXTZEN_API_KEY')
 
   defaultConfig {
     minSdkVersion 15
     targetSdkVersion 26
-    buildConfigField 'String', 'MAPZEN_API_KEY', '"' + apiKey + '"'
+    buildConfigField 'String', 'NEXTZEN_API_KEY', '"' + apiKey + '"'
   }
 
   sourceSets.main {
@@ -27,9 +26,10 @@ android {
       minifyEnabled true
     }
   }
+
 }
 
 dependencies {
-  compile project(path: ':tangram')
-  compile 'com.android.support:design:25.3.1'
+  implementation project(path: ':tangram')
+  implementation 'com.android.support:design:25.3.1'
 }

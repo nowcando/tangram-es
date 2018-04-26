@@ -254,7 +254,7 @@ NS_ASSUME_NONNULL_END
 /**
  Called whenever `-[TGMapViewController captureScreenshot:] is called on the map view.
 
- @param mapView a pointer to the map view
+ @param view a pointer to the map view
  @param screenshot the image object representing the screenshot
  */
 - (void)mapView:(nonnull TGMapViewController *)view didCaptureScreenshot:(nonnull UIImage *)screenshot;
@@ -370,6 +370,7 @@ NS_ASSUME_NONNULL_BEGIN
  or be notified when a network request completes).
  More informations on the default provided configuration can be found on the description
  of `TGHttpHandler`.
+ @note If a scene load is called before viewDidLoad, httpHandler will result in an error response.
  */
 @property (strong, nonatomic) TGHttpHandler* httpHandler;
 
@@ -472,7 +473,7 @@ NS_ASSUME_NONNULL_BEGIN
  Set a `TGDebugFlag` to the map view
 
  @param debugFlag the debug flag to set
- @param value whether the flag is on or off
+ @param on whether the flag is on or off
  */
 - (void)setDebugFlag:(TGDebugFlag)debugFlag value:(BOOL)on;
 
